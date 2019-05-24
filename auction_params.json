@@ -1,0 +1,13 @@
+{
+  "initial node": "0",
+  "0": {
+    "name": "offerer",
+    "move_generator": "allowed_offers",
+    "switch_player": true,
+    "next": "1"},
+  "1": {
+    "name": "acceptor",
+    "move_generator": "allowed_acceptors",
+    "switch_player": false,
+    "next": "0"}
+}
