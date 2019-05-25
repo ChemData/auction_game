@@ -1,6 +1,7 @@
 import os
 import json
 import numpy as np
+import scipy.stats
 import pandas as pd
 
 
@@ -12,8 +13,22 @@ def game_start(num_items, starting_cash):
     return output
 
 
-def allowed_offers(game_state):
+def allowed_offers(game_state, **extra_vars):
     """Determine what offers are permitted and return those resultant board states."""
+    output = []
+
+
+
+def price_spacing(offer_output):
+    """Return the prices and probabilities to offer each item for sale at."""
+    num = 5
+    prices = np.zeros((len(offer_output), num))
+    for j, i in enumerate(range(-num//2+1, num//2+1)):
+        prices[:, j] = offer_output[:, 1] + i*offer_output[:, 2]
+    prices = prices.astype(int)
+    probs = scipy.stats.norm.pdf(range(-num//2+1, num//2+1))
+    probs = np.concatenate([probs, probs, probs]).reshape((len(offer_output), num))
+    return {'prices': prices, 'probs': probs}
 
 
 class Node:
@@ -35,4 +50,6 @@ with open('auction_params.json', 'r') as fp:
     p = json.load(fp)
 
 
-p = game_start([5,4,3], 100)
+d = np.array([[.4, 20, 3], [.3, 10, 2], [.3, 8, 3]])
+z = price_spacing(d)
+
