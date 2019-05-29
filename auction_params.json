@@ -2,14 +2,13 @@
   "initial node": "0",
   "0": {
     "name": "offerer",
-    "move_generator": "allowed_offers",
-    "extra_var_generator": "price_spacing",
+    "node_class": "auction.AuctionOffer",
     "switch_player": true,
     "next": "1"
   },
   "1": {
     "name": "acceptor",
-    "move_generator": "allowed_acceptors",
+    "node_class": "auction.AuctionAccept",
     "switch_player": false,
     "next": "0"
   }
