@@ -1,5 +1,5 @@
 import unittest
-from auction2 import *
+from auction import *
 
 
 class TestAuctionGameState(unittest.TestCase):
