@@ -258,7 +258,6 @@ class AuctionGameState:
         return gen_func
 
 
-
 class FakeNN:
 
     def __init__(self):
@@ -278,6 +277,7 @@ class FakeNN:
 class AuctionNN(BasicNeuralNetwork):
     loss_names = {0: ['win_prob_loss', 'item_choice_loss', 'distributions_loss'],
                   1: ['win_prob_loss', 'move_choice_loss']}
+    output_divisions = {0: (1, 4), 1: (1,)}
 
     def _create_new(self, save=False):
 
@@ -285,7 +285,8 @@ class AuctionNN(BasicNeuralNetwork):
         self.ids = [0, 0]
         if save:
             for i, model in enumerate(self.models):
-                model.save(os.path.join(self.model_folder, f'{i}-0.hdf5'))
+                os.makedirs(os.path.join(self.model_folder, f'model {i}'), exist_ok=True)
+                model.save(os.path.join(self.model_folder, f'model {i}', '0.hdf5'))
                 new_info = pd.DataFrame([[0, 0, 'random start', i]],
                                         columns=['set', 'epoch', 'base_model_id', 'model_type'])
                 self._add_model_info(new_info, i)
@@ -353,13 +354,6 @@ class AuctionNN(BasicNeuralNetwork):
         else:
             output = self.models[1].predict(inputs)
         return [output[0][0, 0], np.concatenate([x.flatten() for x in output[1:]])]
-
-    def _data_generator(self, model_num):
-        while True:
-            choices = np.random.randint(0, self.x.shape[0] - 1, self.batch_size)
-            splits = np.cumsum(list(zip(*self.models[model_num].output_shape))[1])[:-1]
-            y = self.y[choices, :]
-            yield self.x[choices, :], np.split(y, splits, axis=1)
 
 
 class BadGameState(BaseException):

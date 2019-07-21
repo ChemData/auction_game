@@ -25,7 +25,8 @@ class TrainingGames:
             games_per_block (int): Number of games in each block.
             head_node (Node class name): Name of a Node class to use as the head.
             model (NNModel): The model to use for play prediction.
-            submodel_nums (tuple): Numbers of the submodels to use.
+            submodel_nums (tuple, None): Numbers of the submodels to use. If None, will
+                use a randomly initialized submodels instead.
             params (dict): Parameters to give to the Node to create a new head.
             params_to_store (dict): Parameter values that should be stored in the run
                 info file. Keys are the param name. Values are format strings of the form:
@@ -33,7 +34,10 @@ class TrainingGames:
             explorations (int): Number of explorations to perform for each move.
         """
         model = model(self.base_folder)
-        model.load_model(submodel_nums)
+        if submodel_nums is None:
+            model._create_new(save=True)
+        else:
+            model.load_model(submodel_nums)
         for b_count in range(num_blocks):
             print(f'Block {b_count}')
             self.block_data = {}
@@ -396,15 +400,16 @@ class Node:
 class BasicNeuralNetwork:
     batch_size = 2000  # How many data points are in each batch
     epoch_size = 1000  # How many batches are in each epoch
-    loss_names = {0: ['move_choice_loss', 'win_prob_loss']}
-
+    validation_frac = .2 # What percentage of the data to use for validation.
+    loss_names = {0: ['move_choice_loss', 'win_prob_loss']}  # Names of the losses for each submodel
+    output_divisions = {0: (1,)} # Where the data for the submodels is broken up for the different outputs.
 
     def __init__(self, base_folder):
         self.base_folder = base_folder
         self.model_folder = os.path.join(self.base_folder, 'models')
         self.data_folder = os.path.join(self.base_folder, 'data')
-        self.num_models = len(self.loss_names.keys())
-        self.ids = [0] * self.num_models
+        self.num_submodels = len(self.loss_names.keys())
+        self.ids = [0] * self.num_submodels
         os.makedirs(self.base_folder, exist_ok=True)
         os.makedirs(self.model_folder, exist_ok=True)
 
@@ -419,23 +424,26 @@ class BasicNeuralNetwork:
                             activation='relu',
                             kernel_initializer='random_uniform',
                             bias_initializer='zeros')(x)
-        out1 = ks.layers.Dense(7,
-                               activation='softmax',
-                               kernel_initializer='random_uniform',
-                               bias_initializer='zeros',
-                               name='move_choice')(x)
-        out2 = ks.layers.Dense(1,
+        out1 = ks.layers.Dense(1,
                                activation='relu',
                                kernel_initializer='random_uniform',
                                bias_initializer='zeros',
                                name='win_prob')(x)
+
+        out2 = ks.layers.Dense(7,
+                               activation='softmax',
+                               kernel_initializer='random_uniform',
+                               bias_initializer='zeros',
+                               name='move_choice')(x)
+
         model = ks.Model(inputs=inp, outputs=[out1, out2])
         model.compile('RMSprop', ['categorical_crossentropy', 'mean_squared_error'])
-        self.models = [model]
+        self.submodels = [model]
         self.ids = [0]
 
         if save:
-            self.models[0].save(os.path.join(self.model_folder, '0-0.hdf5'))
+            os.makedirs(os.path.join(self.model_folder, f'model 0'), exist_ok=True)
+            self.submodels[0].save(os.path.join(self.model_folder, 'model 0', '0.hdf5'))
             new_info = pd.DataFrame([[0, 0, 'random start', 0]],
                                     columns=['set', 'epoch', 'base_model_id', 'model_type'])
             self._add_model_info(new_info, 0)
@@ -455,14 +463,31 @@ class BasicNeuralNetwork:
             arrays = dict(np.load(os.path.join(self.data_folder, '{}.npz'.format(num))))
             self.data = Node.merge_arrays(self.data, arrays)
 
-    def train_on_data(self, epoch_count=10, base_model_ids=None, blocks=None):
+        self._split_outputs()
+
+    def _split_outputs(self):
+        """Split the targets (output) of the training data into multiple arrays to account
+        for the multiple sets of outputs for each submodel."""
+        for set in self.data.keys():
+            split_set = []
+            if '_out' in set:
+                num = int(set.rstrip('_out'))
+                data = self.data[set]
+                prev_split = 0
+                for split in self.output_divisions.get(num, []):
+                    split_set += [data[:, prev_split:split]]
+                    prev_split = split
+                split_set += [data[:, prev_split:]]
+                self.data[set] = split_set
+
+    def train_on_data(self, epoch_count=10, submodel_ids=None, blocks=None):
         """Train a new model starting with an existing one.
 
         Args:
             epoch_count (int): Number of epochs of training to perform.
-            base_model (int, tuple or None): Which existing model to use as a starting
-                point. If None, will use the most recent stored model. If tuple, will load
-                the provided number for the given model.
+            submodel_ids (int, tuple or None): Which existing submodels to use as a starting
+                point. If None, will use the most recent stored submodels. If tuple, will load
+                the provided number for the given submodels.
             blocks (int or None): Number of blocks of data to load. If None, will load all
                 available.
         """
@@ -472,20 +497,23 @@ class BasicNeuralNetwork:
         if to_use == -1:
             self._create_new(save=True)
             to_use = 0
-        if base_model_ids is not None:
-            to_use = base_model_ids
+        if submodel_ids is not None:
+            to_use = submodel_ids
         self.load_model(to_use)
         group_numbers = np.array(self._newest_model) + 1
 
-        for i, model in enumerate(self.models):
+        for i, model in enumerate(self.submodels):
             self.x = self.data[f'{i}_inp']
             self.y = self.data[f'{i}_out']
+            self._divide_data()
             form_string = os.path.join('{}-{}.hdf5'.format(group_numbers[i], '{epoch}'))
             filename = os.path.join(self.model_folder, f'model {i}', form_string)
-            self.history = model.fit_generator(self._data_generator(i),
-                                                    steps_per_epoch=self.epoch_size,
-                                                    epochs=epoch_count,
-                                                    callbacks=[ks.callbacks.ModelCheckpoint(filename)])
+            self.history = model.fit_generator(
+                self._data_generator(),
+                validation_data=(self.x_val, self.y_val),
+                steps_per_epoch=self.epoch_size,
+                epochs=epoch_count,
+                callbacks=[ks.callbacks.ModelCheckpoint(filename)])
             new_info = pd.DataFrame(index=range(epoch_count))
             new_info['set'] = group_numbers[i] + 1
             new_info['epoch'] = range(1, epoch_count + 1)
@@ -502,7 +530,7 @@ class BasicNeuralNetwork:
         """Adjust model names so that those with the format [type]-[group]-[epoch] becomes just
         [type]-[ID]."""
         unadj = r'^\d+-\d+.hdf5'
-        for i in range(self.num_models):
+        for i in range(self.num_submodels):
             folder = os.path.join(self.model_folder, f'model {i}')
             to_fix = [os.path.basename(x) for x in os.listdir(folder)]
             to_fix = [x for x in to_fix if re.match(unadj, x)]
@@ -514,17 +542,26 @@ class BasicNeuralNetwork:
     def load_model(self, ids):
         """Load a saved model."""
         if type(ids) == int:
-            ids = [ids] * self.num_models
+            ids = [ids] * self.num_submodels
         self.ids = ids
-        self.models = []
+        self.submodels = []
         for model_num, model_id in enumerate(self.ids):
-            self.models += [ks.models.load_model(os.path.join(
+            self.submodels += [ks.models.load_model(os.path.join(
                 self.model_folder, f'model {model_num}', f'{model_id}.hdf5'))]
+
+    def _divide_data(self):
+        """Divide data in to training and validation sets."""
+        choices = np.random.randint(0, self.x.shape[0] - 1, int(self.x.shape[0]*self.validation_frac))
+        self.x_train = np.delete(self.x, choices, axis=0)
+        self.x_val = np.take(self.x, choices, axis=0)
+        self.y_train = [np.delete(y, choices, axis=0) for y in self.y]
+        self.y_val = [np.take(y, choices, axis=0) for y in self.y]
 
     def _data_generator(self):
         while True:
-            choices = np.random.randint(0, self.x.shape[0] - 1, self.batch_size)
-            yield self.x[choices, :, :, :], [self.y1[choices, :], self.y2[choices, :]]
+            choices = np.random.randint(0, self.x_train.shape[0] - 1, self.batch_size)
+            yield np.take(self.x_train, choices, axis=0),\
+                  [np.take(y, choices, axis=0) for y in self.y_train]
 
     def _add_model_info(self, new_info, model_num):
         """Add data for recently trained models into the info file."""
@@ -546,7 +583,7 @@ class BasicNeuralNetwork:
     def _newest_model(self):
         """Return the biggest model number."""
         output = []
-        for i in range(self.num_models):
+        for i in range(self.num_submodels):
             folder = os.path.join(self.model_folder, f'model {i}')
             try:
                 files = os.listdir(folder)

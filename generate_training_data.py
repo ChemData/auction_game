@@ -13,7 +13,7 @@ params = {'game_state': AuctionGameState([5, 4, 3], 100, 0, 0),
           'is_head': True}
 
 
-t.run_games(10, 100, AuctionOffer, AuctionNN, 1, params, {'exp_const': '{param.__name__}'},
+t.run_games(30, 100, AuctionOffer, AuctionNN, None, params, {'exp_const': '{param.__name__}'},
             explorations=200)
 
 
