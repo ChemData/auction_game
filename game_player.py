@@ -5,6 +5,8 @@ import re
 import numpy as np
 import scipy.stats
 import pandas as pd
+from pandas.errors import EmptyDataError
+import matplotlib.pyplot as plt
 import keras as ks
 
 
@@ -412,6 +414,10 @@ class BasicNeuralNetwork:
         self.ids = [0] * self.num_submodels
         os.makedirs(self.base_folder, exist_ok=True)
         os.makedirs(self.model_folder, exist_ok=True)
+        for i in self.loss_names.keys():
+            self.loss_names[i] += ['loss']
+            self.loss_names[i] += ['val_' + x for x in self.loss_names[i]]
+
 
     def _create_new(self, save=False):
         inp = ks.Input((6, 7, 2))
@@ -501,6 +507,8 @@ class BasicNeuralNetwork:
             to_use = submodel_ids
         self.load_model(to_use)
         group_numbers = np.array(self._newest_model) + 1
+        self._load_info()
+        set = self.info[0].iloc[-1]['set'] + 1
 
         for i, model in enumerate(self.submodels):
             self.x = self.data[f'{i}_inp']
@@ -515,7 +523,7 @@ class BasicNeuralNetwork:
                 epochs=epoch_count,
                 callbacks=[ks.callbacks.ModelCheckpoint(filename)])
             new_info = pd.DataFrame(index=range(epoch_count))
-            new_info['set'] = group_numbers[i] + 1
+            new_info['set'] = set
             new_info['epoch'] = range(1, epoch_count + 1)
             new_info['base_model_id'] = to_use[i]
             new_info['batch_size'] = self.batch_size
@@ -563,15 +571,11 @@ class BasicNeuralNetwork:
             yield np.take(self.x_train, choices, axis=0),\
                   [np.take(y, choices, axis=0) for y in self.y_train]
 
-    def _add_model_info(self, new_info, model_num):
+    def _add_model_info(self, new_info, submodel_num):
         """Add data for recently trained models into the info file."""
-        path = os.path.join(self.base_folder, f'model_{model_num}_info.txt')
-        try:
-            existing = pd.read_csv(path)
-        except FileNotFoundError:
-            existing = pd.DataFrame()
-        all = existing.append(new_info, ignore_index=True)
-        all.to_csv(path, index=False)
+        self._load_info()
+        self.info[submodel_num] = self.info[submodel_num].append(new_info, ignore_index=True)
+        self._save_info()
 
     @property
     def _last_block(self):
@@ -592,6 +596,42 @@ class BasicNeuralNetwork:
                 output += [-1]
         return output
 
+    def _load_info(self):
+        """Load the model training results."""
+        self.info = {}
+        for i in range(self.num_submodels):
+            path = os.path.join(self.base_folder, f'model_{i}_info.txt')
+            try:
+                self.info[i] = pd.read_csv(path)
+            except (FileNotFoundError, EmptyDataError):
+                self.info[i] = pd.DataFrame()
+
+    def _save_info(self):
+        """Store model training results."""
+        for i in self.info.keys():
+            path = os.path.join(self.base_folder, f'model_{i}_info.txt')
+            self.info[i].to_csv(path, index=False)
+
+    def loss_analysis(self):
+        self._load_info()
+        max_set = self.info[0].iloc[-1]['set']
+        f, axs = plt.subplots(1, self.num_submodels)
+        for i in range(self.num_submodels):
+            data = self.info[i]
+            data = data[data['set'] == max_set]
+            loss_names = self.loss_names[i]
+            loss_names = [x for x in loss_names if 'val_' not in x]
+            loss_names = [a+x for x in loss_names for a in ['', 'val_']]
+            for j, loss in enumerate(loss_names):
+                if j % 2 == 0:
+                    p = axs[i].plot(data['epoch'], data[loss], label=loss)
+                else:
+                    axs[i].plot(data['epoch'], data[loss], linestyle=':', label='', c=p[0].get_color())
+            axs[i].legend()
+            axs[i].set_xlabel('Epoch')
+            axs[i].set_ylabel('Loss')
+
+        plt.show()
 
 
 def basic_exp_const(depth):
