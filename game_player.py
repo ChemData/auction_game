@@ -2,6 +2,7 @@ import os
 import json
 import itertools
 import re
+from copy import deepcopy
 import numpy as np
 import scipy.stats
 import pandas as pd
@@ -405,6 +406,7 @@ class BasicNeuralNetwork:
     validation_frac = .2 # What percentage of the data to use for validation.
     loss_names = {0: ['move_choice_loss', 'win_prob_loss']}  # Names of the losses for each submodel
     output_divisions = {0: (1,)} # Where the data for the submodels is broken up for the different outputs.
+    b = ks.backend.variable(1)
 
     def __init__(self, base_folder):
         self.base_folder = base_folder
@@ -414,10 +416,15 @@ class BasicNeuralNetwork:
         self.ids = [0] * self.num_submodels
         os.makedirs(self.base_folder, exist_ok=True)
         os.makedirs(self.model_folder, exist_ok=True)
+        self.all_loss_names = deepcopy(self.loss_names)
         for i in self.loss_names.keys():
-            self.loss_names[i] += ['loss']
-            self.loss_names[i] += ['val_' + x for x in self.loss_names[i]]
-
+            self.all_loss_names[i] += ['loss']
+            self.all_loss_names[i] += ['val_' + x for x in self.all_loss_names[i]]
+        # These are not the loss weights that get updated during training but are rather
+        # the even weights to use when beginning to train a model.
+        self.loss_weights = {x: [ks.backend.variable(1) for y in
+                                 range(len(self.loss_names[x]))] for x in
+                             self.loss_names.keys()}
 
     def _create_new(self, save=False):
         inp = ks.Input((6, 7, 2))
@@ -443,14 +450,16 @@ class BasicNeuralNetwork:
                                name='move_choice')(x)
 
         model = ks.Model(inputs=inp, outputs=[out1, out2])
-        model.compile('RMSprop', ['categorical_crossentropy', 'mean_squared_error'])
+        model.compile('RMSprop',
+                      ['categorical_crossentropy', 'mean_squared_error'],
+                      loss_weights=self.loss_weights[0])
         self.submodels = [model]
-        self.ids = [0]
 
         if save:
             os.makedirs(os.path.join(self.model_folder, f'model 0'), exist_ok=True)
-            self.submodels[0].save(os.path.join(self.model_folder, 'model 0', '0.hdf5'))
-            new_info = pd.DataFrame([[0, 0, 'random start', 0]],
+            num = self._newest_model(0) + 1
+            self.submodels[0].save(os.path.join(self.model_folder, 'model 0', f'{num}.hdf5'))
+            new_info = pd.DataFrame([[self._max_set(0)+1, 1, 'random start', 0]],
                                     columns=['set', 'epoch', 'base_model_id', 'model_type'])
             self._add_model_info(new_info, 0)
 
@@ -506,7 +515,7 @@ class BasicNeuralNetwork:
         if submodel_ids is not None:
             to_use = submodel_ids
         self.load_model(to_use)
-        group_numbers = np.array(self._newest_model) + 1
+        group_numbers = self._newest_model(0) + 1
         self._load_info()
         set = self.info[0].iloc[-1]['set'] + 1
 
@@ -514,14 +523,15 @@ class BasicNeuralNetwork:
             self.x = self.data[f'{i}_inp']
             self.y = self.data[f'{i}_out']
             self._divide_data()
-            form_string = os.path.join('{}-{}.hdf5'.format(group_numbers[i], '{epoch}'))
+            form_string = os.path.join('{}-{}.hdf5'.format(group_numbers, '{epoch}'))
             filename = os.path.join(self.model_folder, f'model {i}', form_string)
             self.history = model.fit_generator(
                 self._data_generator(),
                 validation_data=(self.x_val, self.y_val),
                 steps_per_epoch=self.epoch_size,
                 epochs=epoch_count,
-                callbacks=[ks.callbacks.ModelCheckpoint(filename)])
+                callbacks=[ks.callbacks.ModelCheckpoint(filename),
+                           ScaleLosses(model.loss_weights, self.loss_names[i])])
             new_info = pd.DataFrame(index=range(epoch_count))
             new_info['set'] = set
             new_info['epoch'] = range(1, epoch_count + 1)
@@ -529,7 +539,7 @@ class BasicNeuralNetwork:
             new_info['batch_size'] = self.batch_size
             new_info['epoch_size'] = self.epoch_size
             new_info['loss'] = self.history.history['loss']
-            for loss in self.loss_names[i]:
+            for loss in self.all_loss_names[i]:
                 new_info[loss] = self.history.history[loss]
             self._add_model_info(new_info, i)
         self._adjust_model_names()
@@ -551,11 +561,15 @@ class BasicNeuralNetwork:
         """Load a saved model."""
         if type(ids) == int:
             ids = [ids] * self.num_submodels
-        self.ids = ids
         self.submodels = []
-        for model_num, model_id in enumerate(self.ids):
-            self.submodels += [ks.models.load_model(os.path.join(
-                self.model_folder, f'model {model_num}', f'{model_id}.hdf5'))]
+        for model_num, model_id in enumerate(ids):
+            new_submodel = ks.models.load_model(os.path.join(
+                self.model_folder, f'model {model_num}', f'{model_id}.hdf5'))
+            # recompile to allow for loss_weights adjustment during training
+            new_submodel.compile(new_submodel.optimizer, new_submodel.loss,
+                                 loss_weights=self.loss_weights[model_num])
+
+            self.submodels += [new_submodel]
 
     def _divide_data(self):
         """Divide data in to training and validation sets."""
@@ -583,18 +597,21 @@ class BasicNeuralNetwork:
         return max([int(os.path.basename(x).split('.')[0])
                     for x in os.listdir(self.data_folder)])
 
-    @property
-    def _newest_model(self):
+    def _newest_model(self, submodel):
         """Return the biggest model number."""
-        output = []
-        for i in range(self.num_submodels):
-            folder = os.path.join(self.model_folder, f'model {i}')
-            try:
-                files = os.listdir(folder)
-                output += [max([int(x.split('.')[0]) for x in files])]
-            except FileNotFoundError:
-                output += [-1]
-        return output
+        self._load_info()
+        try:
+            return self.info[submodel].index[-1]
+        except IndexError:
+            return -1
+
+    def _max_set(self, submodel):
+        """Returns the largest set number."""
+        self._load_info()
+        try:
+            return self.info[submodel]['set'].max()
+        except KeyError:
+            return -1
 
     def _load_info(self):
         """Load the model training results."""
@@ -602,7 +619,7 @@ class BasicNeuralNetwork:
         for i in range(self.num_submodels):
             path = os.path.join(self.base_folder, f'model_{i}_info.txt')
             try:
-                self.info[i] = pd.read_csv(path)
+                self.info[i] = pd.read_csv(path, index_col=0)
             except (FileNotFoundError, EmptyDataError):
                 self.info[i] = pd.DataFrame()
 
@@ -610,7 +627,7 @@ class BasicNeuralNetwork:
         """Store model training results."""
         for i in self.info.keys():
             path = os.path.join(self.base_folder, f'model_{i}_info.txt')
-            self.info[i].to_csv(path, index=False)
+            self.info[i].to_csv(path)
 
     def loss_analysis(self):
         self._load_info()
@@ -619,7 +636,7 @@ class BasicNeuralNetwork:
         for i in range(self.num_submodels):
             data = self.info[i]
             data = data[data['set'] == max_set]
-            loss_names = self.loss_names[i]
+            loss_names = self.all_loss_names[i]
             loss_names = [x for x in loss_names if 'val_' not in x]
             loss_names = [a+x for x in loss_names for a in ['', 'val_']]
             for j, loss in enumerate(loss_names):
@@ -633,6 +650,48 @@ class BasicNeuralNetwork:
 
         plt.show()
 
+    def best_epochs(self, set):
+        """Find the epoch(s) which have the lowest validation loss in a particular set."""
+        self._load_info()
+        output = {'models': [], 'epochs': []}
+        for i in range(self.num_submodels):
+            data = self.info[i]
+            data = data[data['set'] == set]
+            rolling_val = data['val_loss'].rolling(window=10, min_periods=1, center=True).mean()
+            best_model = rolling_val.idxmin()
+            output['models'] += [best_model]
+            output['epochs'] += [data.loc[best_model, 'epoch']]
+
+        return output
+
 
 def basic_exp_const(depth):
     return 1.212
+
+
+class ScaleLosses(ks.callbacks.Callback):
+    """Sets the scale of different losses in a single model after a few epochs so that
+    all losses are roughly comparable."""
+    scale_epoch = 9  # Epoch at which to carry out scaling
+
+    def __init__(self, loss_weights, loss_names):
+        self.loss_weights = loss_weights
+        self.loss_names = loss_names
+        self.loss_history = np.zeros((self.scale_epoch, len(loss_weights)))
+
+    def on_epoch_end(self, epoch, logs={}):
+
+        if epoch < self.scale_epoch:
+            for i, loss in enumerate(self.loss_names):
+                self.loss_history[epoch, i] = logs[loss]
+
+        if epoch == self.scale_epoch - 1:
+            mean_loss = self.loss_history.mean(axis=0)
+
+            adj_losses = self.loss_history[-1, :]/mean_loss/len(mean_loss)
+            weights = self.loss_history[-1, :].sum()/mean_loss/len(mean_loss)/adj_losses.sum()
+
+            for i, w in enumerate(self.loss_weights):
+                ks.backend.set_value(w, weights[i])
+
+

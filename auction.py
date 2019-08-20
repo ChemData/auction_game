@@ -281,13 +281,13 @@ class AuctionNN(BasicNeuralNetwork):
 
     def _create_new(self, save=False):
 
-        self.models = [self._offer_model(), self._accept_model()]
-        self.ids = [0, 0]
+        self.submodels = [self._offer_model(), self._accept_model()]
         if save:
-            for i, model in enumerate(self.models):
+            for i, model in enumerate(self.submodels):
+                num = self._newest_model(i) + 1
                 os.makedirs(os.path.join(self.model_folder, f'model {i}'), exist_ok=True)
-                model.save(os.path.join(self.model_folder, f'model {i}', '0.hdf5'))
-                new_info = pd.DataFrame([[0, 0, 'random start', i]],
+                model.save(os.path.join(self.model_folder, f'model {i}', f'{num}.hdf5'))
+                new_info = pd.DataFrame([[self._max_set(i)+1, 1, 'random start', i]],
                                         columns=['set', 'epoch', 'base_model_id', 'model_type'])
                 self._add_model_info(new_info, i)
 
@@ -319,7 +319,8 @@ class AuctionNN(BasicNeuralNetwork):
 
         model = ks.Model(inputs=inp, outputs=[out1, out2, out3])
         model.compile('RMSprop', ['binary_crossentropy', 'categorical_crossentropy',
-                                  'mean_squared_error'])
+                                  'mean_squared_error'],
+                      loss_weights=self.loss_weights[0])
         return model
 
     def _accept_model(self):
@@ -344,7 +345,8 @@ class AuctionNN(BasicNeuralNetwork):
                                name='move_choice')(x)
 
         model = ks.Model(inputs=inp, outputs=[out1, out2])
-        model.compile('RMSprop', ['binary_crossentropy', 'categorical_crossentropy'])
+        model.compile('RMSprop', ['binary_crossentropy', 'categorical_crossentropy'],
+                      loss_weights=self.loss_weights[1])
         return model
 
     def predict(self, inputs, node_type):
