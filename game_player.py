@@ -18,8 +18,8 @@ class TrainingGames:
         self.base_folder = base_folder
         os.makedirs(self.base_folder, exist_ok=True)
 
-    def run_games(self, num_blocks, games_per_block, head_node, model, submodel_nums, params,
-                  params_to_store, explorations):
+    def run_games(self, num_blocks, games_per_block, head_node, model, submodel_nums,
+                  head_node_params, params_to_store, explorations):
         """Run games to generate training data.
 
         Args:
@@ -30,7 +30,7 @@ class TrainingGames:
             model (NNModel): The model to use for play prediction.
             submodel_nums (tuple, None): Numbers of the submodels to use. If None, will
                 use a randomly initialized submodels instead.
-            params (dict): Parameters to give to the Node to create a new head.
+            head_node_params (dict): Parameters to give to the Node to create a new head.
             params_to_store (dict): Parameter values that should be stored in the run
                 info file. Keys are the param name. Values are format strings of the form:
                 '{param}' with any extra formating included e.g. '{param.__name__}'.
@@ -46,7 +46,7 @@ class TrainingGames:
             self.block_data = {}
             for g_count in range(games_per_block):
                 print(f'\tGame {g_count}')
-                head = head_node(model=model, **params)
+                head = head_node(model=model, **head_node_params)
                 self._add_data(self._play_game(head, explorations))
             self._store_block(locals())
 
@@ -650,13 +650,15 @@ class BasicNeuralNetwork:
 
         plt.show()
 
-    def best_epochs(self, set):
+    def best_epochs(self, set_num=None):
         """Find the epoch(s) which have the lowest validation loss in a particular set."""
         self._load_info()
         output = {'models': [], 'epochs': []}
+        if set_num is None:
+            set_num = self._max_set(0)
         for i in range(self.num_submodels):
             data = self.info[i]
-            data = data[data['set'] == set]
+            data = data[data['set'] == set_num]
             rolling_val = data['val_loss'].rolling(window=10, min_periods=1, center=True).mean()
             best_model = rolling_val.idxmin()
             output['models'] += [best_model]
