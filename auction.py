@@ -30,11 +30,12 @@ class AuctionOffer(Node):
         prices = np.zeros((num_items, num))
         item_probs = self.child_probs[:num_items].reshape((-1, 1))
         offer_output = self.child_probs[self.game_state.num_items:].reshape((num_items, 2))
-        # If, for any item, one offer is greater than the cash of the active player,
-        # a new set of offers is created with a mean of cash/2 and an std of std/8
+        # If, for any item, the absolute value of one offer is greater than the cash of
+        #  the active player, a new set of offers is created with a mean of cash/2 and an
+        #  std of std/8
         cash = self.game_state.cash[self.game_state.active_player]
         for i, row in enumerate(offer_output):
-            if row[0] + abs(row[1])*num//2 > 1:
+            if row[0] + abs(row[1])*num//2 > 1 or row[0] - abs(row[1])*num//2 < -1:
                 offer_output[i, 0] = 1/2
                 offer_output[i, 1] = 1/8
 
@@ -279,15 +280,16 @@ class AuctionNN(BasicNeuralNetwork):
                   1: ['win_prob_loss', 'move_choice_loss']}
     output_divisions = {0: (1, 4), 1: (1,)}
 
-    def _create_new(self, save=False):
+    def create_new(self, save=False):
 
         self.submodels = [self._offer_model(), self._accept_model()]
         if save:
             for i, model in enumerate(self.submodels):
                 num = self._newest_model(i) + 1
                 os.makedirs(os.path.join(self.model_folder, f'model {i}'), exist_ok=True)
+                model.loss_weights = [ks.backend.get_value(x) for x in model.loss_weights]
                 model.save(os.path.join(self.model_folder, f'model {i}', f'{num}.hdf5'))
-                new_info = pd.DataFrame([[self._max_set(i)+1, 1, 'random start', i]],
+                new_info = pd.DataFrame([[self.max_set(i) + 1, 1, 'random start', i]],
                                         columns=['set', 'epoch', 'base_model_id', 'model_type'])
                 self._add_model_info(new_info, i)
 
@@ -352,9 +354,9 @@ class AuctionNN(BasicNeuralNetwork):
     def predict(self, inputs, node_type):
         inputs = inputs.reshape((1, -1))
         if node_type == AuctionOffer:
-            output = self.models[0].predict(inputs)
+            output = self.submodels[0].predict(inputs)
         else:
-            output = self.models[1].predict(inputs)
+            output = self.submodels[1].predict(inputs)
         return [output[0][0, 0], np.concatenate([x.flatten() for x in output[1:]])]
 
 
