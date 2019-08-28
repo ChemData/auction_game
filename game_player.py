@@ -18,8 +18,8 @@ class TrainingGames:
         self.base_folder = base_folder
         os.makedirs(self.base_folder, exist_ok=True)
 
-    def run_games(self, num_blocks, games_per_block, head_node, model, submodel_nums, params,
-                  params_to_store, explorations):
+    def run_games(self, num_blocks, games_per_block, head_node, model, submodel_nums,
+                   head_node_params, params_to_store, explorations):
         """Run games to generate training data.
 
         Args:
@@ -30,7 +30,7 @@ class TrainingGames:
             model (NNModel): The model to use for play prediction.
             submodel_nums (tuple, None): Numbers of the submodels to use. If None, will
                 use a randomly initialized submodels instead.
-            params (dict): Parameters to give to the Node to create a new head.
+            head_node_params (dict): Parameters to give to the Node to create a new head.
             params_to_store (dict): Parameter values that should be stored in the run
                 info file. Keys are the param name. Values are format strings of the form:
                 '{param}' with any extra formating included e.g. '{param.__name__}'.
@@ -38,7 +38,7 @@ class TrainingGames:
         """
         model = model(self.base_folder)
         if submodel_nums is None:
-            model._create_new(save=True)
+            model.create_new(save=True)
         else:
             model.load_model(submodel_nums)
         for b_count in range(num_blocks):
@@ -46,7 +46,7 @@ class TrainingGames:
             self.block_data = {}
             for g_count in range(games_per_block):
                 print(f'\tGame {g_count}')
-                head = head_node(model=model, **params)
+                head = head_node(model=model, **head_node_params)
                 self._add_data(self._play_game(head, explorations))
             self._store_block(locals())
 
@@ -77,7 +77,7 @@ class TrainingGames:
             new_info[f'submodel {i}'] = [id]
         new_info['explorations'] = [params['explorations']]
         for param, fstring in params['params_to_store'].items():
-            new_info[param] = [fstring.format(param=params['params'][param])]
+            new_info[param] = [fstring.format(param=params['head_node_params'][param])]
         all_info = old_info.append(new_info, ignore_index=True, sort=False)
         all_info.to_csv(os.path.join(self.base_folder, 'training_game_info.txt'))
         np.savez(os.path.join(data_folder, str(all_info.index.values[-1])), **self.block_data)
@@ -259,8 +259,9 @@ class Node:
         ps = np.array([c.p for c in self.children])
         ns = np.array([c.N for c in self.children])
 
-        return (qs + self.exp_const(self.depth) * ps * np.sqrt(ns.sum())/(1 + ns)) - \
-               (1 - np.array(self.allowed_moves))
+        arr = (qs + self.exp_const(self.depth) * ps * np.sqrt(ns.sum())/(1 + ns))
+        arr[np.where(~np.array(self.allowed_moves))] = -np.inf
+        return arr
 
     def _expand(self):
         """Expand the children of this node."""
@@ -426,7 +427,7 @@ class BasicNeuralNetwork:
                                  range(len(self.loss_names[x]))] for x in
                              self.loss_names.keys()}
 
-    def _create_new(self, save=False):
+    def create_new(self, save=False):
         inp = ks.Input((6, 7, 2))
         x = ks.layers.Flatten()(inp)
         x = ks.layers.Dense(50,
@@ -459,7 +460,7 @@ class BasicNeuralNetwork:
             os.makedirs(os.path.join(self.model_folder, f'model 0'), exist_ok=True)
             num = self._newest_model(0) + 1
             self.submodels[0].save(os.path.join(self.model_folder, 'model 0', f'{num}.hdf5'))
-            new_info = pd.DataFrame([[self._max_set(0)+1, 1, 'random start', 0]],
+            new_info = pd.DataFrame([[self.max_set(0) + 1, 1, 'random start', 0]],
                                     columns=['set', 'epoch', 'base_model_id', 'model_type'])
             self._add_model_info(new_info, 0)
 
@@ -472,9 +473,10 @@ class BasicNeuralNetwork:
         first = 0
         if blocks is not None:
             first = self._last_block - blocks
+            first = max(first, 0)
 
         self.data = {}
-        for num in range(first, self._last_block):
+        for num in range(first, self._last_block+1):
             arrays = dict(np.load(os.path.join(self.data_folder, '{}.npz'.format(num))))
             self.data = Node.merge_arrays(self.data, arrays)
 
@@ -510,7 +512,7 @@ class BasicNeuralNetwork:
 
         to_use = self._newest_model
         if to_use == -1:
-            self._create_new(save=True)
+            self.create_new(save=True)
             to_use = 0
         if submodel_ids is not None:
             to_use = submodel_ids
@@ -530,7 +532,8 @@ class BasicNeuralNetwork:
                 validation_data=(self.x_val, self.y_val),
                 steps_per_epoch=self.epoch_size,
                 epochs=epoch_count,
-                callbacks=[ks.callbacks.ModelCheckpoint(filename),
+                callbacks=[SaveModel(self._newest_model(i)+1,
+                                     os.path.join(self.model_folder, f'model {i}')),
                            ScaleLosses(model.loss_weights, self.loss_names[i])])
             new_info = pd.DataFrame(index=range(epoch_count))
             new_info['set'] = set
@@ -605,7 +608,7 @@ class BasicNeuralNetwork:
         except IndexError:
             return -1
 
-    def _max_set(self, submodel):
+    def max_set(self, submodel):
         """Returns the largest set number."""
         self._load_info()
         try:
@@ -650,17 +653,23 @@ class BasicNeuralNetwork:
 
         plt.show()
 
-    def best_epochs(self, set):
+    def best_epochs(self, set_num=None):
         """Find the epoch(s) which have the lowest validation loss in a particular set."""
         self._load_info()
         output = {'models': [], 'epochs': []}
+        if set_num is None:
+            set_num = self.max_set(0)
         for i in range(self.num_submodels):
             data = self.info[i]
-            data = data[data['set'] == set]
-            rolling_val = data['val_loss'].rolling(window=10, min_periods=1, center=True).mean()
-            best_model = rolling_val.idxmin()
-            output['models'] += [best_model]
-            output['epochs'] += [data.loc[best_model, 'epoch']]
+            data = data[data['set'] == set_num]
+            try:
+                rolling_val = data['val_loss'].rolling(window=10, min_periods=1, center=True).mean()
+                best_model = rolling_val.idxmin()
+                output['models'] += [best_model]
+                output['epochs'] += [data.loc[best_model, 'epoch']]
+            except KeyError:
+                output['models'] += [data.iloc[0].name]
+                output['epochs'] += [1]
 
         return output
 
@@ -693,5 +702,23 @@ class ScaleLosses(ks.callbacks.Callback):
 
             for i, w in enumerate(self.loss_weights):
                 ks.backend.set_value(w, weights[i])
+
+
+class SaveModel(ks.callbacks.Callback):
+    """
+    Call to save a model at the end of each epoch. This class converts the tf.Variables
+    of model.class_weights into floats before saving the model to avoid encoding errors.
+    """
+
+    def __init__(self, first_number, folder_path):
+        self.number = first_number
+        self.folder_path = folder_path
+
+    def on_epoch_end(self, epoch, logs={}):
+        loss_weights = self.model.loss_weights
+        self.model.loss_weights = [ks.backend.get_value(x) for x in self.model.loss_weights]
+        self.model.save(os.path.join(self.folder_path, f'{self.number}.hdf5'))
+        self.model.loss_weights = loss_weights
+        self.number += 1
 
 
