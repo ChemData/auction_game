@@ -517,16 +517,13 @@ class BasicNeuralNetwork:
         if submodel_ids is not None:
             to_use = submodel_ids
         self.load_model(to_use)
-        group_numbers = self._newest_model(0) + 1
         self._load_info()
-        set = self.info[0].iloc[-1]['set'] + 1
+        t_set = self.info[0].iloc[-1]['set'] + 1
 
         for i, model in enumerate(self.submodels):
             self.x = self.data[f'{i}_inp']
             self.y = self.data[f'{i}_out']
             self._divide_data()
-            form_string = os.path.join('{}-{}.hdf5'.format(group_numbers, '{epoch}'))
-            filename = os.path.join(self.model_folder, f'model {i}', form_string)
             self.history = model.fit_generator(
                 self._data_generator(),
                 validation_data=(self.x_val, self.y_val),
@@ -536,7 +533,7 @@ class BasicNeuralNetwork:
                                      os.path.join(self.model_folder, f'model {i}')),
                            ScaleLosses(model.loss_weights, self.loss_names[i])])
             new_info = pd.DataFrame(index=range(epoch_count))
-            new_info['set'] = set
+            new_info['set'] = t_set
             new_info['epoch'] = range(1, epoch_count + 1)
             new_info['base_model_id'] = to_use[i]
             new_info['batch_size'] = self.batch_size
@@ -545,20 +542,6 @@ class BasicNeuralNetwork:
             for loss in self.all_loss_names[i]:
                 new_info[loss] = self.history.history[loss]
             self._add_model_info(new_info, i)
-        self._adjust_model_names()
-
-    def _adjust_model_names(self):
-        """Adjust model names so that those with the format [type]-[group]-[epoch] becomes just
-        [type]-[ID]."""
-        unadj = r'^\d+-\d+.hdf5'
-        for i in range(self.num_submodels):
-            folder = os.path.join(self.model_folder, f'model {i}')
-            to_fix = [os.path.basename(x) for x in os.listdir(folder)]
-            to_fix = [x for x in to_fix if re.match(unadj, x)]
-            for f in to_fix:
-                nums = re.findall(r'\d+', f)
-                new_name = f'{int(nums[0]) + int(nums[1]) - 1}.hdf5'
-                os.rename(os.path.join(folder, f), os.path.join(folder, new_name))
 
     def load_model(self, ids):
         """Load a saved model."""
