@@ -1,0 +1,24 @@
+{
+    "training_games": {
+        "head_node_params": {
+            "game_state": "auction.AuctionGameState([5, 4, 3], 100, 0, 0)",
+            "exp_const": "game_player.basic_exp_const",
+            "node_dict": {
+                "0": "auction.AuctionOffer",
+                "1": "auction.AuctionAccept"
+            }
+        },
+        "params_to_store": {
+            "exp_const": "{param.__name__}"
+        },
+        "head_node": "auction.AuctionOffer"
+    },
+    "model": "auction.AuctionNN",
+    "explorations": 10,
+    "epochs_per_generation": 15,
+    "blocks_per_generation": 1,
+    "games_per_block": 10,
+    "blocks_per_training": 10,
+    "params_to_store": ["explorations", "epochs_per_generation", "blocks_per_generation",
+        "games_per_block", "blocks_per_training"]
+}
